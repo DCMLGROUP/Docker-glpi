@@ -5,7 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt update && apt upgrade -y
 
-# Apache + PHP + dépendances de base
+# Apache + PHP + dépendances GLPI
 RUN apt-get install -y apache2 mariadb-server wget tar unzip \
     php libapache2-mod-php php-mysql php-xml php-curl php-gd \
     php-ldap php-intl php-mbstring php-zip php-imap
@@ -24,7 +24,6 @@ RUN a2enmod rewrite && rm -f /etc/apache2/sites-enabled/000-default.conf
 RUN cat > /etc/apache2/sites-available/glpi.conf <<'EOF'
 <VirtualHost *:80>
     ServerName _
-
     DocumentRoot /var/www/html/public
     DirectoryIndex index.php
 
@@ -32,7 +31,6 @@ RUN cat > /etc/apache2/sites-available/glpi.conf <<'EOF'
         Options -MultiViews +FollowSymLinks
         AllowOverride None
         Require all granted
-
         RewriteEngine On
         RewriteCond %{REQUEST_FILENAME} !-f
         RewriteCond %{REQUEST_FILENAME} !-d
@@ -42,14 +40,11 @@ RUN cat > /etc/apache2/sites-available/glpi.conf <<'EOF'
     <Directory /var/www/html>
         Require all denied
     </Directory>
-
-    ErrorLog ${APACHE_LOG_DIR}/glpi_error.log
-    CustomLog ${APACHE_LOG_DIR}/glpi_access.log combined
 </VirtualHost>
 EOF
 RUN a2ensite glpi
 
-# Extensions PHP requises
+# Extensions PHP requises GLPI
 RUN apt-get update && apt-get install -y --no-install-recommends \
     php8.3-bcmath \
     php8.3-bz2 \
@@ -58,39 +53,31 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsodium23 && \
     rm -rf /var/lib/apt/lists/*
 
-# Réglages PHP recommandés
+# Réglages PHP recommandés GLPI
 RUN mkdir -p /etc/php/8.3/apache2/conf.d && \
     cat > /etc/php/8.3/apache2/conf.d/90-glpi.ini <<'INI'
 memory_limit = 512M
 session.use_strict_mode = 1
 session.use_only_cookies = 1
 session.cookie_httponly = 1
-;session.cookie_secure = 1
 opcache.enable=1
-opcache.memory_consumption=128
-opcache.interned_strings_buffer=16
-opcache.max_accelerated_files=10000
-opcache.revalidate_freq=60
 INI
 
-# Droits pour GLPI (files, config, marketplace)
-RUN for d in /var/www/html/files /var/www/html/config /var/www/html/marketplace; do \
-      mkdir -p "$d"; \
-      chown -R www-data:www-data "$d"; \
-      find "$d" -type d -exec chmod 775 {} \; ; \
-      find "$d" -type f -exec chmod 664 {} \; \
-    done
+# Droits GLPI
+RUN mkdir -p /var/www/html/files /var/www/html/config /var/www/html/marketplace \
+ && chown -R www-data:www-data /var/www/html/files /var/www/html/config /var/www/html/marketplace \
+ && find /var/www/html/files /var/www/html/config /var/www/html/marketplace -type d -exec chmod 775 {} \; \
+ && find /var/www/html/files /var/www/html/config /var/www/html/marketplace -type f -exec chmod 664 {} \;
 
-# Permissions de base
+# Permissions générales
 RUN chown -R www-data:www-data /var/www/html \
  && find /var/www/html -type d -exec chmod 755 {} \; \
  && find /var/www/html -type f -exec chmod 644 {} \;
 
-# Script simple d'init DB + install GLPI + lancement Apache
+# Démarrage MariaDB + création DB + installation GLPI CLI + lancement Apache
 RUN printf '%s\n' \
 '#!/usr/bin/env bash' \
 'set -e' \
-'' \
 'service mariadb start' \
 'sleep 5' \
 'mysql -uroot -e "ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''P@ssw0rd'\''; FLUSH PRIVILEGES;"' \
