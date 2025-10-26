@@ -49,16 +49,17 @@ RUN cat > /etc/apache2/sites-available/glpi.conf <<'EOF'
 EOF
 RUN a2ensite glpi
 
-# Extensions PHP requises par GLPI (versionnées pour Ubuntu 24.04 / PHP 8.3)
+# Extensions PHP requises (Ubuntu 24.04 / PHP 8.3)
+# Remplacement: pas de php8.3-sodium -> installer la lib système libsodium23
 RUN apt-get update && apt-get install -y --no-install-recommends \
     php8.3-bcmath \
     php8.3-bz2 \
     php8.3-exif \
-    php8.3-sodium \
-    php8.3-opcache && \
+    php8.3-opcache \
+    libsodium23 && \
     rm -rf /var/lib/apt/lists/*
 
-# Réglages PHP recommandés (PHP 8.3)
+# Réglages PHP recommandés
 RUN mkdir -p /etc/php/8.3/apache2/conf.d && \
     cat > /etc/php/8.3/apache2/conf.d/90-glpi.ini <<'INI'
 memory_limit = 512M
@@ -81,7 +82,7 @@ RUN for d in /var/www/html/files /var/www/html/config /var/www/html/marketplace;
       find "$d" -type f -exec chmod 664 {} \; ; \
     done
 
-# Permissions de base pour le reste
+# Permissions de base
 RUN chown -R www-data:www-data /var/www/html \
  && find /var/www/html -type d -exec chmod 755 {} \; \
  && find /var/www/html -type f -exec chmod 644 {} \;
