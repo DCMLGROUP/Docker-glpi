@@ -2,3 +2,5 @@
 FROM debian:12-slim
 
 RUN apt update && apt upgrade -y
+
+RUN apt-get install -y apache2 nginx mariadb-server wget tar unzip php php-mysql php-xml php-curl php-gd php-ldap php-intl php-mbstring php-zip php-imap
