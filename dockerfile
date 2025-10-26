@@ -1,5 +1,5 @@
 # Image de base
-FROM debian:12-slim
+FROM debian:13
 
 RUN apt update && apt upgrade -y
 
