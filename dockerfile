@@ -1,52 +1,50 @@
-FROM debian:12
+# Image de base
+FROM debian:12-slim
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    GLPI_BASE=/var/www/gtms/glpi
+    APACHE_RUN_USER=www-data \
+    APACHE_RUN_GROUP=www-data \
+    APACHE_LOG_DIR=/var/log/apache2 \
+    TZ=Europe/Paris
 
-# Apache, PHP et outils pour récupérer la dernière release
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    apache2 \
-    php libapache2-mod-php \
-    php-xml php-curl php-gd php-intl php-mbstring php-zip php-ldap php-imap \
-    ca-certificates curl jq tar \
- && rm -rf /var/lib/apt/lists/*
+ARG GLPI_VERSION=10.0.15
 
-# Télécharger la dernière version GLPI et l’installer dans /var/www/gtms/glpi
-WORKDIR /tmp
-RUN set -eux; \
-    TAG="$(curl -s https://api.github.com/repos/glpi-project/glpi/releases/latest | jq -r '.tag_name')" ; \
-    curl -fsSL -o glpi.tgz "https://github.com/glpi-project/glpi/releases/download/${TAG}/glpi-${TAG}.tgz" ; \
-    tar -xzf glpi.tgz ; rm glpi.tgz ; \
-    mkdir -p /var/www/gtms ; \
-    rm -rf "${GLPI_BASE}" ; \
-    mv glpi "${GLPI_BASE}"
+# Installation Apache / PHP / MariaDB
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    ca-certificates wget curl unzip tzdata supervisor \
+    apache2 libapache2-mod-php \
+    php php-cli php-mysql php-xml php-curl php-gd php-ldap php-imap php-intl php-mbstring php-zip php-bcmath php-apcu \
+    mariadb-server && \
+    rm -rf /var/lib/apt/lists/*
 
-# VHost Apache : DocumentRoot = /var/www/gtms/glpi/public + Alias /install
-RUN sed -i 's/^Listen .*/Listen 0.0.0.0:80/' /etc/apache2/ports.conf \
- && a2enmod rewrite headers \
- && printf '%s\n' \
-   '<VirtualHost *:80>' \
-   '  ServerName _' \
-   '  DocumentRoot /var/www/gtms/glpi/public' \
-   '' \
-   '  # Expose le programme d’installation hors de /public' \
-   '  Alias /install /var/www/gtms/glpi/install' \
-   '  <Directory /var/www/gtms/glpi/install>' \
-   '    Require all granted' \
-   '    AllowOverride All' \
-   '  </Directory>' \
-   '' \
-   '  <Directory /var/www/gtms/glpi/public>' \
-   '    Require all granted' \
-   '    AllowOverride All' \
-   '    DirectoryIndex index.php' \
-   '  </Directory>' \
-   '' \
-   '  ErrorLog ${APACHE_LOG_DIR}/error.log' \
-   '  CustomLog ${APACHE_LOG_DIR}/access.log combined' \
-   '</VirtualHost>' \
-   > /etc/apache2/sites-available/000-default.conf \
- && chown -R www-data:www-data /var/www/gtms
+# Téléchargement GLPI
+WORKDIR /var/www
+RUN wget -q https://github.com/glpi-project/glpi/releases/download/${GLPI_VERSION}/glpi-${GLPI_VERSION}.tgz && \
+    tar -xzf glpi-${GLPI_VERSION}.tgz && \
+    rm -f glpi-${GLPI_VERSION}.tgz && \
+    mv glpi glpi-${GLPI_VERSION} && \
+    ln -s /var/www/glpi-${GLPI_VERSION} /var/www/html && \
+    chown -R www-data:www-data /var/www
+
+# Configuration Apache (rewrite pour GLPI)
+RUN a2enmod rewrite && \
+    echo "<VirtualHost *:80> \
+        DocumentRoot /var/www/html/public \
+        <Directory /var/www/html/public> \
+            AllowOverride All \
+            Require all granted \
+        </Directory> \
+    </VirtualHost>" > /etc/apache2/sites-available/000-default.conf && \
+    chown -R www-data:www-data /var/www/html
+
+# Création DB GLPI
+RUN service mariadb start && \
+    mariadb -e "CREATE DATABASE IF NOT EXISTS glpi CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" && \
+    mariadb -e "CREATE USER IF NOT EXISTS 'glpi'@'localhost' IDENTIFIED BY 'glpi';" && \
+    mariadb -e "GRANT ALL PRIVILEGES ON glpi.* TO 'glpi'@'localhost'; FLUSH PRIVILEGES;"
+
+# Script de démarrage
+CMD service mariadb start && apachectl -D FOREGROUND
 
 EXPOSE 80
-CMD ["apachectl","-D","FOREGROUND"]
