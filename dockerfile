@@ -1,6 +1,9 @@
 FROM debian:12
-ENV DEBIAN_FRONTEND=noninteractive
 
+ENV DEBIAN_FRONTEND=noninteractive \
+    GLPI_BASE=/var/www/gtms/glpi
+
+# Apache, PHP et outils pour récupérer la dernière release
 RUN apt-get update && apt-get install -y --no-install-recommends \
     apache2 \
     php libapache2-mod-php \
@@ -8,31 +11,34 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl jq tar \
  && rm -rf /var/lib/apt/lists/*
 
-# Télécharger la dernière release GLPI et la déployer en racine (sans sous-dossier)
+# Télécharger la dernière version GLPI et l’installer dans /var/www/gtms/glpi
 WORKDIR /tmp
 RUN set -eux; \
     TAG="$(curl -s https://api.github.com/repos/glpi-project/glpi/releases/latest | jq -r '.tag_name')" ; \
     curl -fsSL -o glpi.tgz "https://github.com/glpi-project/glpi/releases/download/${TAG}/glpi-${TAG}.tgz" ; \
     tar -xzf glpi.tgz ; rm glpi.tgz ; \
-    rm -rf /var/www/html/* ; mv glpi/* /var/www/html/ ; rmdir glpi
+    mkdir -p /var/www/gtms ; \
+    rm -rf "${GLPI_BASE}" ; \
+    mv glpi "${GLPI_BASE}"
 
-# Apache : DocumentRoot = /public + Alias /install
+# VHost Apache : DocumentRoot = /var/www/gtms/glpi/public + Alias /install
 RUN sed -i 's/^Listen .*/Listen 0.0.0.0:80/' /etc/apache2/ports.conf \
  && a2enmod rewrite headers \
  && printf '%s\n' \
    '<VirtualHost *:80>' \
-   '  DocumentRoot /var/www/html/public' \
+   '  ServerName _' \
+   '  DocumentRoot /var/www/gtms/glpi/public' \
    '' \
-   '  # GLPI 11: /install est en dehors de /public, on l’expose via un Alias' \
-   '  Alias /install /var/www/html/install' \
-   '  <Directory /var/www/html/install>' \
+   '  # Expose le programme d’installation hors de /public' \
+   '  Alias /install /var/www/gtms/glpi/install' \
+   '  <Directory /var/www/gtms/glpi/install>' \
    '    Require all granted' \
    '    AllowOverride All' \
    '  </Directory>' \
    '' \
-   '  <Directory /var/www/html/public>' \
-   '    AllowOverride All' \
+   '  <Directory /var/www/gtms/glpi/public>' \
    '    Require all granted' \
+   '    AllowOverride All' \
    '    DirectoryIndex index.php' \
    '  </Directory>' \
    '' \
@@ -40,7 +46,7 @@ RUN sed -i 's/^Listen .*/Listen 0.0.0.0:80/' /etc/apache2/ports.conf \
    '  CustomLog ${APACHE_LOG_DIR}/access.log combined' \
    '</VirtualHost>' \
    > /etc/apache2/sites-available/000-default.conf \
- && chown -R www-data:www-data /var/www/html
+ && chown -R www-data:www-data /var/www/gtms
 
 EXPOSE 80
 CMD ["apachectl","-D","FOREGROUND"]
