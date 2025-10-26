@@ -1,32 +1,57 @@
-# Image de base Debian
 FROM debian:12
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \
+    GLPI_VERSION=10.0.15 \
+    GLPI_URL=https://github.com/glpi-project/glpi/releases/download \
+    APACHE_RUN_USER=www-data \
+    APACHE_RUN_GROUP=www-data
 
-# Mise à jour et installation des dépendances
-RUN apt-get update && \
-    apt-get install -y apache2 wget unzip mariadb-server php php-mysql php-cli php-xml php-curl php-gd php-ldap php-imap php-intl php-mbstring php-zip && \
-        apt-get clean
+# Paquets
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates wget unzip \
+      supervisor \
+      apache2 \
+      mariadb-server \
+      php php-cli php-fpm php-mysql php-xml php-curl php-gd php-ldap php-imap php-intl php-mbstring php-zip php-apcu \
+      && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-        # Téléchargement de GLPI
-        WORKDIR /var/www/html
-        RUN wget https://github.com/glpi-project/glpi/releases/download/10.0.15/glpi-10.0.15.tgz && \
-            tar -xzf glpi-10.0.15.tgz && \
-                mv glpi/* . && \
-                    rm -rf glpi glpi-10.0.15.tgz
+# Téléchargement GLPI
+WORKDIR /var/www/html
+RUN wget -O glpi.tgz "${GLPI_URL}/${GLPI_VERSION}/glpi-${GLPI_VERSION}.tgz" \
+    && tar -xzf glpi.tgz \
+    && rm glpi.tgz \
+    && mv glpi/* . \
+    && rmdir glpi \
+    && chown -R www-data:www-data /var/www/html
 
-                    # Permissions web
-                    RUN chown -R www-data:www-data /var/www/html
+# Logs & data persistants
+RUN mkdir -p /var/log/supervisor /docker-entrypoint-init.d \
+    /var/lib/mysql \
+    /var/www/html/files /var/www/html/config \
+    && chown -R mysql:mysql /var/lib/mysql \
+    && chown -R www-data:www-data /var/www/html/files /var/www/html/config
 
-                    # Création DB + utilisateur MySQL
-                    RUN service mariadb start && \
-                        mysql -e "CREATE DATABASE glpi;" && \
-                            mysql -e "CREATE USER 'glpi'@'localhost' IDENTIFIED BY 'glpi';" && \
-                                mysql -e "GRANT ALL PRIVILEGES ON glpi.* TO 'glpi'@'localhost';" && \
-                                    mysql -e "FLUSH PRIVILEGES;"
+# Config supervisord
+COPY supervisord.conf /etc/supervisor/supervisord.conf
 
-                                    # Exposer le port web
-                                    EXPOSE 80
+# Script d'init (DB + droits)
+COPY init-glpi.sh /usr/local/bin/init-glpi.sh
+RUN chmod +x /usr/local/bin/init-glpi.sh
 
-                                    # Script de démarrage (Apache + MariaDB)
-                                    CMD service mariadb start && apachectl -D FOREGROUND
+# Apache en foreground
+RUN sed -i 's|^export APACHE_LOCK_DIR.*|export APACHE_LOCK_DIR=/var/lock/apache2|' /etc/apache2/envvars \
+ && sed -i 's|^export APACHE_PID_FILE.*|export APACHE_PID_FILE=/var/run/apache2/apache2.pid|' /etc/apache2/envvars \
+ && a2enmod rewrite
+
+# Variables DB (sur lesquelles on peut agir avec -e)
+ENV GLPI_DB_NAME=glpi \
+    GLPI_DB_USER=glpi \
+    GLPI_DB_PASSWORD=glpi \
+    GLPI_DB_HOST=localhost
+
+EXPOSE 80
+
+# Volumes (persistance DB + fichiers GLPI)
+VOLUME ["/var/lib/mysql", "/var/www/html/files", "/var/www/html/config"]
+
+CMD ["/usr/bin/supervisord", "-n", "-c", "/etc/supervisor/supervisord.conf"]
