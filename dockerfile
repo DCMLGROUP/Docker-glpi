@@ -8,7 +8,9 @@ RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
       apache2 mariadb-server wget curl ca-certificates tar unzip \
       php libapache2-mod-php php-mysql php-xml php-curl php-gd \
-      php-ldap php-intl php-mbstring php-zip php-imap && \
+      php-ldap php-intl php-mbstring php-zip php-imap \
+      php8.3-bcmath php8.3-bz2 php8.3-exif php8.3-opcache libsodium23 \
+      util-linux && \
     update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
@@ -50,11 +52,6 @@ RUN a2enmod rewrite && rm -f /etc/apache2/sites-enabled/000-default.conf && \
 EOF
 RUN a2ensite glpi
 
-# Extensions PHP supplémentaires (Ubuntu 24.04 / PHP 8.3)
-RUN apt-get update && apt-get install -y --no-install-recommends \
-      php8.3-bcmath php8.3-bz2 php8.3-exif php8.3-opcache libsodium23 && \
-    rm -rf /var/lib/apt/lists/*
-
 # Réglages PHP recommandés pour GLPI
 RUN mkdir -p /etc/php/8.3/apache2/conf.d && \
     cat >/etc/php/8.3/apache2/conf.d/90-glpi.ini <<'INI'
@@ -70,44 +67,48 @@ opcache.max_accelerated_files=10000
 opcache.revalidate_freq=60
 INI
 
-# Dossiers requis + permissions
+# Dossiers requis + permissions de base
 RUN for d in /var/www/html/files /var/www/html/config /var/www/html/marketplace; do \
       mkdir -p "$d"; \
-      chown -R www-data:www-data "$d"; \
-      find "$d" -type d -exec chmod 775 {} \; ; \
-      find "$d" -type f -exec chmod 664 {} \; ; \
     done && \
     chown -R www-data:www-data /var/www/html && \
+    find /var/www/html/files /var/www/html/config /var/www/html/marketplace -type d -exec chmod 775 {} \; && \
+    find /var/www/html/files /var/www/html/config /var/www/html/marketplace -type f -exec chmod 664 {} \; && \
     find /var/www/html -type d -exec chmod 755 {} \; && \
     find /var/www/html -type f -exec chmod 644 {} \;
 
-# Script d'init MariaDB + lancement Apache
-RUN printf '%s\n' \
-  '#!/usr/bin/env bash' \
-  'set -e' \
-  'service mariadb start' \
-  'sleep 5' \
-  'mysql -uroot -e "ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''P@ssw0rd'\''; FLUSH PRIVILEGES;"' \
-  'mysql -uroot -pP@ssw0rd -e "CREATE DATABASE IF NOT EXISTS glpi CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"' \
-  'mysql -uroot -pP@ssw0rd -e "CREATE USER IF NOT EXISTS '\''glpi'\''@'\''localhost'\'' IDENTIFIED BY '\''P@ssw0rd'\'';"' \
-  'mysql -uroot -pP@ssw0rd -e "GRANT ALL PRIVILEGES ON glpi.* TO '\''glpi'\''@'\''localhost'\''; FLUSH PRIVILEGES;"' \
-  'exec apache2ctl -D FOREGROUND' \
-  > /usr/local/bin/start.sh && chmod +x /usr/local/bin/start.sh
-
-# Configuration automatique de GLPI via CLI en www-data (recommandé)
+# === Auto-config GLPI AU BUILD ===
+# 1) Démarrer MariaDB, 2) créer DB + user, 3) lancer l'install GLPI en www-data
 RUN service mariadb start && \
     sleep 5 && \
+    mysql -uroot -e "CREATE DATABASE IF NOT EXISTS glpi CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" && \
+    mysql -uroot -e "CREATE USER IF NOT EXISTS 'glpi'@'localhost' IDENTIFIED BY 'P@ssw0rd';" && \
+    mysql -uroot -e "GRANT ALL PRIVILEGES ON glpi.* TO 'glpi'@'localhost'; FLUSH PRIVILEGES;" && \
     runuser -u www-data -- php /var/www/html/bin/console database:install \
-       --db-host=localhost \
-       --db-name=glpi \
-       --db-user=glpi \
-       --db-password=P@ssw0rd \
-       --no-interaction \
-       --force && \
+        --db-host=localhost \
+        --db-name=glpi \
+        --db-user=glpi \
+        --db-password=P@ssw0rd \
+        --no-interaction \
+        --force && \
     runuser -u www-data -- php /var/www/html/bin/console db:default-data \
-       --no-interaction \
-       --force
+        --no-interaction \
+        --force
+
+# Script d'init (runtime) — pas de modification root/DB ici
+RUN printf '%s\n' \
+'#!/usr/bin/env bash' \
+'set -e' \
+'service mariadb start' \
+'sleep 3' \
+'if [ ! -f /var/www/html/config/config_db.php ]; then' \
+'  echo "[WARN] GLPI non détecté (config_db.php absent) — tentative d’installation silencieuse..." >&2' \
+'  runuser -u www-data -- php /var/www/html/bin/console database:install --db-host=localhost --db-name=glpi --db-user=glpi --db-password=P@ssw0rd --no-interaction --force || true' \
+'  runuser -u www-data -- php /var/www/html/bin/console db:default-data --no-interaction --force || true' \
+'fi' \
+'chown -R www-data:www-data /var/www/html' \
+'exec apache2ctl -D FOREGROUND' \
+> /usr/local/bin/start.sh && chmod +x /usr/local/bin/start.sh
 
 EXPOSE 80
-
 ENTRYPOINT ["/usr/local/bin/start.sh"]
