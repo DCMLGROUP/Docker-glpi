@@ -94,6 +94,20 @@ RUN printf '%s\n' \
   'exec apache2ctl -D FOREGROUND' \
   > /usr/local/bin/start.sh && chmod +x /usr/local/bin/start.sh
 
+# Configuration automatique de GLPI via CLI
+RUN service mariadb start && \
+    sleep 5 && \
+    php /var/www/html/bin/console database:install \
+       --db-host=localhost \
+       --db-name=glpi \
+       --db-user=glpi \
+       --db-password=P@ssw0rd \
+       --no-interaction \
+       --force && \
+    php /var/www/html/bin/console db:default-data \
+       --no-interaction \
+       --force
+
 EXPOSE 80
 
 ENTRYPOINT ["/usr/local/bin/start.sh"]
