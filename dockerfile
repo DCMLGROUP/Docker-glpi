@@ -1,35 +1,32 @@
+# Image de base Debian
 FROM debian:12
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    GLPI_VERSION=10.0.15 \
-    GLPI_DB_NAME=glpi \
-    GLPI_DB_USER=glpi \
-    GLPI_DB_PASSWORD=glpi
+ENV DEBIAN_FRONTEND=noninteractive
 
-# Mise à jour + dépendances
+# Mise à jour et installation des dépendances
 RUN apt-get update && \
-    apt-get install -y apache2 wget tar mariadb-server \
-    php php-mysql php-cli php-xml php-curl php-gd php-mbstring php-zip php-intl php-apcu && \
-    apt-get clean && rm -rf /var/lib/apt/lists/*
+    apt-get install -y apache2 wget unzip mariadb-server php php-mysql php-cli php-xml php-curl php-gd php-ldap php-imap php-intl php-mbstring php-zip && \
+    apt-get clean
 
-# Installer GLPI
+# Téléchargement de GLPI
 WORKDIR /var/www/html
-RUN wget https://github.com/glpi-project/glpi/releases/download/${GLPI_VERSION}/glpi-${GLPI_VERSION}.tgz && \
-    tar -xzf glpi-${GLPI_VERSION}.tgz && \
-    rm glpi-${GLPI_VERSION}.tgz && \
-    mv glpi/* . && rmdir glpi && \
-    chown -R www-data:www-data /var/www/html
+RUN wget https://github.com/glpi-project/glpi/releases/download/10.0.15/glpi-10.0.15.tgz && \
+    tar -xzf glpi-10.0.15.tgz && \
+    mv glpi/* . && \
+    rm -rf glpi glpi-10.0.15.tgz
 
-# Config MySQL
+# Permissions web
+RUN chown -R www-data:www-data /var/www/html
+
+# Création DB + utilisateur MySQL
 RUN service mariadb start && \
-    mysql -e "CREATE DATABASE IF NOT EXISTS \`${GLPI_DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" && \
-    mysql -e "CREATE USER IF NOT EXISTS '${GLPI_DB_USER}'@'localhost' IDENTIFIED BY '${GLPI_DB_PASSWORD}';" && \
-    mysql -e "GRANT ALL ON \`${GLPI_DB_NAME}\`.* TO '${GLPI_DB_USER}'@'localhost';" && \
+    mysql -e "CREATE DATABASE glpi;" && \
+    mysql -e "CREATE USER 'glpi'@'localhost' IDENTIFIED BY 'glpi';" && \
+    mysql -e "GRANT ALL PRIVILEGES ON glpi.* TO 'glpi'@'localhost';" && \
     mysql -e "FLUSH PRIVILEGES;"
 
-# Apache en foreground
-RUN echo "ServerName localhost" >> /etc/apache2/apache2.conf
-
+# Exposer le port web
 EXPOSE 80
 
+# Script de démarrage (Apache + MariaDB)
 CMD service mariadb start && apachectl -D FOREGROUND
