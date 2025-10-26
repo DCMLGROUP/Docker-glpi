@@ -10,6 +10,21 @@ RUN apt-get install -y apache2 mariadb-server wget tar unzip \
     php libapache2-mod-php php-mysql php-xml php-curl php-gd \
     php-ldap php-intl php-mbstring php-zip php-imap
 
+# Script simple d'init DB + lancement Apache
+RUN printf '%s\n' \
+'#!/usr/bin/env bash' \
+'set -e' \
+'service mariadb start' \
+'sleep 5' \
+'mysql -uroot -e "ALTER USER '\''root'\''@'\''localhost'\'' IDENTIFIED BY '\''P@ssw0rd'\''; FLUSH PRIVILEGES;"' \
+'mysql -uroot -pP@ssw0rd -e "CREATE DATABASE glpi CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"' \
+'mysql -uroot -pP@ssw0rd -e "CREATE USER '\''glpi'\''@'\''localhost'\'' IDENTIFIED BY '\''P@ssw0rd'\'';"' \
+'mysql -uroot -pP@ssw0rd -e "GRANT ALL PRIVILEGES ON glpi.* TO '\''glpi'\''@'\''localhost'\''; FLUSH PRIVILEGES;"' \
+'exec apache2ctl -D FOREGROUND' \
+> /usr/local/bin/start.sh && chmod +x /usr/local/bin/start.sh
+
+ENTRYPOINT ["/usr/local/bin/start.sh"]
+
 # Télécharger GLPI
 WORKDIR /tmp
 RUN wget https://github.com/glpi-project/glpi/releases/download/11.0.1/glpi-11.0.1.tgz
