@@ -9,7 +9,10 @@ WORKDIR /tmp
 
 RUN wget https://github.com/glpi-project/glpi/releases/download/11.0.1/glpi-11.0.1.tgz
 
-RUN tar -xzvf glpi-11.0.1.tgz /var/www/html/
+WORKDIR /var/www/html
+RUN mkdir -p /var/www/html \
+ && tar -xzf /tmp/glpi-11.0.1.tgz -C /var/www/html --strip-components=1 \
+ && rm -f /tmp/glpi-11.0.1.tgz
 
 CMD ["apachectl","-D","FOREGROUND"]
 EXPOSE 80/tcp
