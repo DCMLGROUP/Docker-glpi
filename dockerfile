@@ -24,31 +24,31 @@ RUN mkdir -p /var/www/html && \
 
 # Apache: activer rewrite et vhost GLPI sur /public (sans .htaccess)
 RUN a2enmod rewrite && rm -f /etc/apache2/sites-enabled/000-default.conf && \
-    bash -lc "cat > /etc/apache2/sites-available/glpi.conf <<'EOF'\n\
-<VirtualHost *:80>\n\
-    ServerName _\n\
-    DocumentRoot /var/www/html/public\n\
-    DirectoryIndex index.php\n\
-\n\
-    <Directory /var/www/html/public>\n\
-        Options -MultiViews +FollowSymLinks\n\
-        AllowOverride None\n\
-        Require all granted\n\
-        RewriteEngine On\n\
-        RewriteCond %{REQUEST_FILENAME} !-f\n\
-        RewriteCond %{REQUEST_FILENAME} !-d\n\
-        RewriteRule ^ index.php [QSA,L]\n\
-    </Directory>\n\
-\n\
-    <Directory /var/www/html>\n\
-        Require all denied\n\
-    </Directory>\n\
-\n\
-    ErrorLog \${APACHE_LOG_DIR}/glpi_error.log\n\
-    CustomLog \${APACHE_LOG_DIR}/glpi_access.log combined\n\
-</VirtualHost>\n\
-EOF" && \
-    a2ensite glpi
+    cat >/etc/apache2/sites-available/glpi.conf <<'EOF'
+<VirtualHost *:80>
+    ServerName _
+    DocumentRoot /var/www/html/public
+    DirectoryIndex index.php
+
+    <Directory /var/www/html/public>
+        Options -MultiViews +FollowSymLinks
+        AllowOverride None
+        Require all granted
+        RewriteEngine On
+        RewriteCond %{REQUEST_FILENAME} !-f
+        RewriteCond %{REQUEST_FILENAME} !-d
+        RewriteRule ^ index.php [QSA,L]
+    </Directory>
+
+    <Directory /var/www/html>
+        Require all denied
+    </Directory>
+
+    ErrorLog ${APACHE_LOG_DIR}/glpi_error.log
+    CustomLog ${APACHE_LOG_DIR}/glpi_access.log combined
+</VirtualHost>
+EOF
+RUN a2ensite glpi
 
 # Extensions PHP supplémentaires (Ubuntu 24.04 / PHP 8.3)
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -57,18 +57,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Réglages PHP recommandés pour GLPI
 RUN mkdir -p /etc/php/8.3/apache2/conf.d && \
-    bash -lc "cat > /etc/php/8.3/apache2/conf.d/90-glpi.ini <<'INI'\n\
-memory_limit = 512M\n\
-session.use_strict_mode = 1\n\
-session.use_only_cookies = 1\n\
-session.cookie_httponly = 1\n\
-;session.cookie_secure = 1\n\
-opcache.enable=1\n\
-opcache.memory_consumption=128\n\
-opcache.interned_strings_buffer=16\n\
-opcache.max_accelerated_files=10000\n\
-opcache.revalidate_freq=60\n\
-INI"
+    cat >/etc/php/8.3/apache2/conf.d/90-glpi.ini <<'INI'
+memory_limit = 512M
+session.use_strict_mode = 1
+session.use_only_cookies = 1
+session.cookie_httponly = 1
+;session.cookie_secure = 1
+opcache.enable=1
+opcache.memory_consumption=128
+opcache.interned_strings_buffer=16
+opcache.max_accelerated_files=10000
+opcache.revalidate_freq=60
+INI
 
 # Dossiers requis + permissions
 RUN for d in /var/www/html/files /var/www/html/config /var/www/html/marketplace; do \
