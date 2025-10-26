@@ -3,17 +3,19 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Mises à jour + Apache/PHP/MariaDB + outils
+# Mises à jour + Apache/PHP/MariaDB + outils + certificats
 RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
-      apache2 mariadb-server wget tar unzip \
+      apache2 mariadb-server wget curl ca-certificates tar unzip \
       php libapache2-mod-php php-mysql php-xml php-curl php-gd \
       php-ldap php-intl php-mbstring php-zip php-imap && \
+    update-ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
-# Télécharger GLPI
+# Télécharger GLPI via curl (HTTPS vérifié)
 WORKDIR /tmp
-RUN wget https://github.com/glpi-project/glpi/releases/download/11.0.1/glpi-11.0.1.tgz
+RUN curl -fsSL -o glpi-11.0.1.tgz \
+    https://github.com/glpi-project/glpi/releases/download/11.0.1/glpi-11.0.1.tgz
 
 # Déployer GLPI dans /var/www/html
 RUN mkdir -p /var/www/html && \
@@ -49,7 +51,6 @@ EOF" && \
     a2ensite glpi
 
 # Extensions PHP supplémentaires (Ubuntu 24.04 / PHP 8.3)
-# Note: pas de paquet php8.3-sodium -> on installe la lib système.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       php8.3-bcmath php8.3-bz2 php8.3-exif php8.3-opcache libsodium23 && \
     rm -rf /var/lib/apt/lists/*
