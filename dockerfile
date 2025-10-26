@@ -7,7 +7,7 @@ RUN apt-get install -y apache2 mariadb-server wget tar unzip php php-mysql php-x
 
 WORKDIR /tmp
 
-RUN https://github.com/glpi-project/glpi/releases
+RUN wget https://github.com/glpi-project/glpi/releases/download/11.0.1/glpi-11.0.1.tgz
 
 CMD ["apachectl","-D","FOREGROUND"]
 EXPOSE 80/tcp
