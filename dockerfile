@@ -92,4 +92,6 @@ RUN printf '%s\n' \
 
 ENTRYPOINT ["/usr/local/bin/start.sh"]
 
+CMD ["apache2ctl","-D","FOREGROUND"]
+
 EXPOSE 80
