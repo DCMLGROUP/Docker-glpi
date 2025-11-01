@@ -1,5 +1,6 @@
 # ===============================
-#  Dockerfile - GLPI 11.0.1 Full Auto (PHP dans /var/www/html)
+#  Dockerfile - GLPI 11.0.1 (sans post-install)
+#  Ubuntu 24.04 + Apache2 + PHP 8.3 (+ MariaDB local optionnelle)
 # ===============================
 
 FROM ubuntu:24.04
@@ -22,7 +23,7 @@ RUN wget -q https://github.com/glpi-project/glpi/releases/download/11.0.1/glpi-1
     tar -xzf glpi-11.0.1.tgz -C /var/www/html --strip-components=1 && \
     rm -f glpi-11.0.1.tgz
 
-# ---- Apache vhost (root sur /public) ----
+# ---- Apache vhost (DocumentRoot sur /public) ----
 RUN a2enmod rewrite && rm -f /etc/apache2/sites-enabled/000-default.conf && \
     cat >/etc/apache2/sites-available/glpi.conf <<'__VHOST__'
 <VirtualHost *:80>
@@ -47,8 +48,8 @@ RUN a2enmod rewrite && rm -f /etc/apache2/sites-enabled/000-default.conf && \
     ErrorLog ${APACHE_LOG_DIR}/glpi_error.log
     CustomLog ${APACHE_LOG_DIR}/glpi_access.log combined
 </VirtualHost>
-__VHOST__
-RUN a2ensite glpi
+__VHOST__ && \
+    a2ensite glpi
 
 # ---- PHP tuning ----
 RUN mkdir -p /etc/php/8.3/apache2/conf.d && \
@@ -72,100 +73,55 @@ RUN for d in /var/www/html/files /var/www/html/config /var/www/html/marketplace;
     find /var/www/html -type d -exec chmod 755 {} \; && \
     find /var/www/html -type f -exec chmod 644 {} \;
 
-# ---------- Script de démarrage (PHP DANS /var/www/html) ----------
-RUN cat > /usr/local/bin/start-glpi.sh <<'__START__' && chmod +x /usr/local/bin/start-glpi.sh
+# ---------- Script d'entrée (sans post-install) ----------
+# - Initialise MariaDB si le datadir est vide
+# - Démarre MariaDB en arrière-plan (optionnel)
+# - (Optionnel) crée la base 'glpi' et l'utilisateur 'glpi' sans toucher à GLPI
+# - Lance Apache au premier plan (OK pour Dokploy)
+RUN cat > /usr/local/bin/entrypoint.sh <<'__ENTRY__' && chmod +x /usr/local/bin/entrypoint.sh
 #!/usr/bin/env bash
 set -Eeuo pipefail
-LOG=/var/log/glpi_install.log
-exec > >(tee -a "$LOG") 2>&1
 
-echo "==[BOOT]== $(date -Is) GLPI startup (PHP in /var/www/html)"
+echo "==[BOOT]== $(date -Is) GLPI container (no post-install)"
 
-# Dossiers runtime
-mkdir -p /run/mysqld /run/apache2 /var/www/html/config
-chown -R mysql:mysql /run/mysqld /var/lib/mysql
-chown -R www-data:www-data /run/apache2 || true
+# Prépare les répertoires runtime
+mkdir -p /run/mysqld /run/apache2
+chown -R mysql:mysql /run/mysqld /var/lib/mysql || true
 
-# (1) Écrire (toujours) config_db.php
-cat >/var/www/html/config/config_db.php <<'__CFG__'
-<?php
-class DB extends DBmysql {
-   public $dbhost = '127.0.0.1';
-   public $dbuser = 'glpi';
-   public $dbpassword = 'P@ssw0rd';
-   public $dbdefault = 'glpi';
-   public $use_utf8mb4 = true;
-}
-__CFG__
-chown -R www-data:www-data /var/www/html/config
-chmod 644 /var/www/html/config/config_db.php
-echo "==[CONF]== config_db.php écrit"
-
-# (2) Init MariaDB si nécessaire
-if [ ! -d "/var/lib/mysql/mysql" ]; then
-  echo "==[DB]== Initialisation datadir MariaDB"
-  mariadb-install-db --user=mysql --ldata=/var/lib/mysql
-fi
-
-# (3) Démarrer MariaDB et tester
-echo "==[DB]== Démarrage MariaDB"
-mysqld_safe --skip-networking=0 --bind-address=127.0.0.1 >/var/log/mysqld_safe.log 2>&1 &
-for i in $(seq 1 90); do
-  mysqladmin ping -uroot --silent && break || sleep 1
-done
-mysql -uroot -e "SELECT VERSION()\G" || { echo "!! MariaDB KO"; exit 1; }
-
-# (4) BDD + user
-mysql -uroot <<'__SQL__'
-CREATE DATABASE IF NOT EXISTS glpi CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER IF NOT EXISTS "glpi"@"localhost" IDENTIFIED BY "P@ssw0rd";
-GRANT ALL PRIVILEGES ON glpi.* TO "glpi"@"localhost";
-FLUSH PRIVILEGES;
-__SQL__
-echo "==[DB]== BDD et utilisateur glpi OK"
-
-# (5) Timezones MySQL
-mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -uroot mysql >/dev/null 2>&1 || true
-
-# IMPORTANT : exécuter toutes les commandes PHP DANS /var/www/html
-cd /var/www/html
-
-# (6) Installer GLPI si glpi_users n'existe pas
-HAS_USERS=$(mysql -Nse "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='glpi' AND table_name='glpi_users';" -uroot || echo 0)
-if [ "$HAS_USERS" -eq 0 ]; then
-  echo "==[INSTALL]== CLI GLPI (dans /var/www/html)…"
-  runuser -u www-data -- bash -lc 'cd /var/www/html && php -v && php bin/console --version'
-  runuser -u www-data -- bash -lc 'cd /var/www/html && php bin/console database:install \
-    --db-host=127.0.0.1 --db-name=glpi --db-user=glpi --db-password="P@ssw0rd" \
-    --admin-password="P@ssw0rd" --no-interaction --force'
-
-  # Vérif immédiate
-  HAS_USERS=$(mysql -Nse "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='glpi' AND table_name='glpi_users';" -uroot || echo 0)
-  if [ "$HAS_USERS" -eq 0 ]; then
-    echo "!! Install CLI OK mais pas de tables. Voir $LOG et /var/log/mysqld_safe.log"
-    exit 1
+# (A) MariaDB local optionnelle
+if command -v mariadb-install-db >/dev/null 2>&1; then
+  if [ ! -d "/var/lib/mysql/mysql" ]; then
+    echo "==[DB]== Initialisation de MariaDB (datadir vide)"
+    mariadb-install-db --user=mysql --ldata=/var/lib/mysql
   fi
 
-  # Timezones GLPI + reset MDP
-  runuser -u www-data -- bash -lc 'cd /var/www/html && php bin/console db:enable_timezones --no-interaction || true'
-  for u in glpi tech normal "post-only" postonly; do
-    runuser -u www-data -- bash -lc "cd /var/www/html && php bin/console glpi:user:password-reset \"$u\" --password \"P@ssw0rd\" || true"
+  echo "==[DB]== Démarrage MariaDB"
+  mysqld_safe --skip-networking=0 --bind-address=127.0.0.1 >/var/log/mysqld_safe.log 2>&1 &
+  for i in $(seq 1 60); do
+    mysqladmin ping -uroot --silent && break || sleep 1
   done
-  echo "==[INSTALL]== GLPI installé. Comptes défaut = P@ssw0rd"
+
+  # (B) Création OPTIONNELLE de la base et de l'utilisateur (SANS post-install GLPI)
+  if mysql -uroot -e "SELECT 1" >/dev/null 2>&1; then
+    mysql -uroot <<'__SQL__'
+CREATE DATABASE IF NOT EXISTS glpi CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS 'glpi'@'localhost' IDENTIFIED BY 'P@ssw0rd';
+GRANT ALL PRIVILEGES ON glpi.* TO 'glpi'@'localhost';
+FLUSH PRIVILEGES;
+__SQL__
+    echo "==[DB]== Base 'glpi' et user 'glpi' prêts (aucune post-install GLPI exécutée)"
+  fi
 else
-  echo "==[INSTALL]== GLPI déjà installé (tables présentes)"
+  echo "==[DB]== MariaDB non présent, on continue sans base locale"
 fi
 
-# (7) Vérifier l'inclusion PHP (dans /var/www/html)
-runuser -u www-data -- bash -lc 'cd /var/www/html && php -r "require \"inc/defines.php\"; require \"inc/based_config.php\"; require \"config/config_db.php\"; echo \"==[PHP]== include OK\n\";"' \
-  || { echo "!! PHP include KO (config_db.php)"; exit 1; }
-
-# (8) Lancer Apache
-echo "==[WEB]== Démarrage Apache"
+# (C) Démarrage Apache au premier plan (Dokploy OK)
+echo "==[WEB]== Démarrage Apache (foreground)"
 exec apache2ctl -D FOREGROUND
-__START__
+__ENTRY__
 
 # ---- Exposition & santé ----
 EXPOSE 80
 HEALTHCHECK --interval=30s --timeout=5s --retries=10 CMD curl -fsS http://127.0.0.1/ || exit 1
-ENTRYPOINT ["/usr/local/bin/start-glpi.sh"]
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
