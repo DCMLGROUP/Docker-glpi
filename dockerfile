@@ -1,5 +1,5 @@
 # ===============================
-#  Dockerfile - GLPI 11.0.1 (auto install + option foreground)
+#  Dockerfile - GLPI 11.0.1 (auto install + reset mdp comptes par défaut)
 # ===============================
 
 FROM ubuntu:24.04
@@ -77,11 +77,11 @@ RUN for d in /var/www/html/files /var/www/html/config /var/www/html/marketplace;
     find /var/www/html -type f -exec chmod 644 {} \;
 
 # ---- Variables runtime ----
-# INSTALL_ON_START=true  -> post-install GLPI en avant-plan au premier run (peut bloquer le proxy si long)
-# INSTALL_ON_START=false -> post-install en tâche de fond (par défaut)
+# INSTALL_ON_START=true  -> post-install GLPI en avant-plan au premier run
+# INSTALL_ON_START=false -> post-install en tâche de fond
 ENV DB_PASSWORD="P@ssw0rd" \
-    GLPI_ADMIN_PASSWORD="Admin123!" \
-    INSTALL_ON_START="false"
+    GLPI_ADMIN_PASSWORD="P@ssw0rd" \
+    INSTALL_ON_START="true"
 
 # ---- Entrypoint ----
 RUN printf '%s\n' \
@@ -139,19 +139,23 @@ RUN printf '%s\n' \
 '    --db-password="${DB_PASSWORD}" \\' \
 '    --admin-password="${GLPI_ADMIN_PASSWORD}" \\' \
 '    --no-interaction --force' \
+'  # Réinitialiser les MDP des comptes par défaut à P@ssw0rd' \
+'  for u in glpi tech normal "post-only" postonly; do' \
+'    runuser -u www-data -- php /var/www/html/bin/console glpi:user:password-reset "$u" --password "${GLPI_ADMIN_PASSWORD}" || true' \
+'  done' \
 '  runuser -u www-data -- php /var/www/html/bin/console db:enable_timezones --no-interaction || true' \
 '  chown -R www-data:www-data /var/www/html || true' \
-'  echo "[INSTALL] Terminé. Identifiants initiaux: admin / ${GLPI_ADMIN_PASSWORD}"' \
+'  echo "[INSTALL] Terminé. Comptes initiaux: glpi/tech/normal/post-only = ${GLPI_ADMIN_PASSWORD}"' \
 '}' \
 '' \
 'if [ "${INSTALL_ON_START}" = "true" ] || [ ! -f /var/www/html/config/config_db.php ]; then' \
 '  echo "[MODE] Post-install GLPI en avant-plan" ' \
-'  install_glpi || { echo "[WARN] Echec post-install (avant-plan), tentative en tâche de fond)"; }' \
+'  install_glpi || { echo "[WARN] Echec post-install (avant-plan)"; }' \
 'else' \
 '  echo "[MODE] Pas de post-install requise (GLPI déjà configuré)"' \
 'fi' \
 '' \
-'# Lancer une tentative en arrière-plan au cas où (non bloquant, évite 502)' \
+'# Tentative non bloquante en arrière-plan si config absente' \
 '(' \
 '  set +e' \
 '  if [ ! -f /var/www/html/config/config_db.php ]; then' \
