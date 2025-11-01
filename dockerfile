@@ -72,7 +72,7 @@ RUN for d in /var/www/html/files /var/www/html/config /var/www/html/marketplace;
     find /var/www/html -type d -exec chmod 755 {} \; && \
     find /var/www/html -type f -exec chmod 644 {} \;
 
-# ---- Script de démarrage complet (avec recréation config_db.php si manquant) ----
+# ---- Script de démarrage complet ----
 RUN cat > /usr/local/bin/start-glpi.sh <<'BASH' && chmod +x /usr/local/bin/start-glpi.sh
 #!/usr/bin/env bash
 set -euo pipefail
@@ -82,21 +82,23 @@ mkdir -p /run/mysqld /run/apache2 /var/www/html/config
 chown -R mysql:mysql /run/mysqld /var/lib/mysql
 chown -R www-data:www-data /run/apache2 /var/www/html/config || true
 
-# 🔧 Vérifier / recréer config_db.php
-if [ ! -f /var/www/html/config/config_db.php ]; then
-  echo "[FIX] Fichier config_db.php manquant, recréation..."
-  cat >/var/www/html/config/config_db.php <<'PHP'
+# 🔧 Réécrire systématiquement config_db.php avant chaque démarrage
+cat >/var/www/html/config/config_db.php <<'PHP'
 <?php
 class DB extends DBmysql {
    public $dbhost = '127.0.0.1';
    public $dbuser = 'glpi';
    public $dbpassword = 'P@ssw0rd';
    public $dbdefault = 'glpi';
+   public $use_utf8mb4 = true;
 }
 PHP
-  chown www-data:www-data /var/www/html/config/config_db.php
-  chmod 644 /var/www/html/config/config_db.php
-fi
+chown www-data:www-data /var/www/html/config/config_db.php
+chmod 644 /var/www/html/config/config_db.php
+
+# 🔎 Log du fichier pour debug
+echo "[FIX] config_db.php (tail):"
+tail -n +1 /var/www/html/config/config_db.php | sed -n '1,8p'
 
 # 🗄️ Initialiser MariaDB au premier run
 if [ ! -d "/var/lib/mysql/mysql" ]; then
