@@ -1,5 +1,6 @@
 # ===============================
-#  Dockerfile - GLPI 11.0.1 Full Auto (run PHP in /var/www/html)
+#  Dockerfile - GLPI 11.0.1 Full Auto
+#  (PHP exécuté dans /var/www/html)
 # ===============================
 
 FROM ubuntu:24.04
@@ -79,14 +80,14 @@ set -Eeuo pipefail
 LOG=/var/log/glpi_install.log
 exec > >(tee -a "$LOG") 2>&1
 
-echo "==[BOOT]== $(date -Is) GLPI full auto startup"
+echo "==[BOOT]== $(date -Is) GLPI startup (all PHP in /var/www/html)"
 
 # Dossiers runtime
 mkdir -p /run/mysqld /run/apache2 /var/www/html/config
 chown -R mysql:mysql /run/mysqld /var/lib/mysql
 chown -R www-data:www-data /run/apache2 || true
 
-# (1) Écrire/écraser systématiquement config_db.php
+# (1) Écrire (toujours) config_db.php
 cat >/var/www/html/config/config_db.php <<'PHP'
 <?php
 class DB extends DBmysql {
@@ -107,7 +108,7 @@ if [ ! -d "/var/lib/mysql/mysql" ]; then
   mariadb-install-db --user=mysql --ldata=/var/lib/mysql
 fi
 
-# (3) Démarrage MariaDB + test
+# (3) Démarrer MariaDB et tester
 echo "==[DB]== Démarrage MariaDB"
 mysqld_safe --skip-networking=0 --bind-address=127.0.0.1 >/var/log/mysqld_safe.log 2>&1 &
 for i in $(seq 1 90); do
@@ -115,7 +116,7 @@ for i in $(seq 1 90); do
 done
 mysql -uroot -e "SELECT VERSION()\G" || { echo "!! MariaDB KO"; exit 1; }
 
-# (4) Créer BDD + user (idempotent)
+# (4) BDD + user
 mysql -uroot <<'SQL'
 CREATE DATABASE IF NOT EXISTS glpi CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS "glpi"@"localhost" IDENTIFIED BY "P@ssw0rd";
@@ -124,52 +125,20 @@ FLUSH PRIVILEGES;
 SQL
 echo "==[DB]== BDD et utilisateur glpi OK"
 
-# (5) Timezones MySQL (best-effort)
+# (5) Timezones MySQL
 mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -uroot mysql >/dev/null 2>&1 || true
 
 # IMPORTANT : exécuter toutes les commandes PHP DANS /var/www/html
 cd /var/www/html
 
-# (6) Installer GLPI si la table 'glpi_users' n'existe pas
+# (6) Installer GLPI si glpi_users n'existe pas
 HAS_USERS=$(mysql -Nse "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='glpi' AND table_name='glpi_users';" -uroot || echo 0)
 if [ "$HAS_USERS" -eq 0 ]; then
-  echo "==[INSTALL]== Lancement install CLI GLPI (dans /var/www/html)…"
-  sudo -u www-data php bin/console database:install \
-    --db-host=127.0.0.1 \
-    --db-name=glpi \
-    --db-user=glpi \
-    --db-password="P@ssw0rd" \
-    --admin-password="P@ssw0rd" \
-    --no-interaction --force
+  echo "==[INSTALL]== CLI GLPI (dans /var/www/html)…"
+  runuser -u www-data -- bash -lc 'cd /var/www/html && php -v && php bin/console --version'
+  runuser -u www-data -- bash -lc 'cd /var/www/html && php bin/console database:install \
+    --db-host=127.0.0.1 --db-name=glpi --db-user=glpi --db-password="P@ssw0rd" \
+    --admin-password="P@ssw0rd" --no-interaction --force'
 
   # Vérif immédiate
-  HAS_USERS=$(mysql -Nse "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='glpi' AND table_name='glpi_users';" -uroot || echo 0)
-  if [ "$HAS_USERS" -eq 0 ]; then
-    echo "!! Install CLI terminée mais aucune table détectée. Voir $LOG et /var/log/mysqld_safe.log"
-    exit 1
-  fi
-
-  # Timezones GLPI
-  sudo -u www-data php bin/console db:enable_timezones --no-interaction || true
-
-  # Reset MDP comptes par défaut
-  for u in glpi tech normal "post-only" postonly; do
-    sudo -u www-data php bin/console glpi:user:password-reset "$u" --password "P@ssw0rd" || true
-  done
-  echo "==[INSTALL]== GLPI installé. Comptes défaut = P@ssw0rd"
-else
-  echo "==[INSTALL]== GLPI déjà installé (tables présentes)"
-fi
-
-# (7) Vérifier que PHP lit bien la conf (dans /var/www/html)
-php -r 'require "inc/defines.php"; require "inc/based_config.php"; require "config/config_db.php"; echo "==[PHP]== include OK\n";' || { echo "!! PHP include KO (config_db.php)"; exit 1; }
-
-# (8) Lancer Apache
-echo "==[WEB]== Démarrage Apache"
-exec apache2ctl -D FOREGROUND
-BASH
-
-# ---- Exposition & santé ----
-EXPOSE 80
-HEALTHCHECK --interval=30s --timeout=5s --retries=10 CMD curl -fsS http://127.0.0.1/ || exit 1
-ENTRYPOINT ["/usr/local/bin/start-glpi.sh"]
+  HAS_US_
