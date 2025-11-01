@@ -1,5 +1,5 @@
 # ===============================
-#  Dockerfile - GLPI 11.0.1 (auto install + reset mdp comptes par défaut)
+#  Dockerfile - GLPI 11.0.1 (preconfig at build + fast first boot)
 # ===============================
 
 FROM ubuntu:24.04
@@ -76,95 +76,85 @@ RUN for d in /var/www/html/files /var/www/html/config /var/www/html/marketplace;
     find /var/www/html -type d -exec chmod 755 {} \; && \
     find /var/www/html -type f -exec chmod 644 {} \;
 
+# ---- Pré-config GLPI AU BUILD: écrire config_db.php ----
+# -> Ceci évite l'écran d'installation web.
+RUN cat >/var/www/html/config/config_db.php <<'PHP'
+<?php
+class DB extends DBmysql {
+   public $dbhost = '127.0.0.1';
+   public $dbuser = 'glpi';
+   public $dbpassword = 'P@ssw0rd';
+   public $dbdefault = 'glpi';
+}
+PHP
+RUN chown -R www-data:www-data /var/www/html/config
+
 # ---- Variables runtime ----
-# INSTALL_ON_START=true  -> post-install GLPI en avant-plan au premier run
-# INSTALL_ON_START=false -> post-install en tâche de fond
 ENV DB_PASSWORD="P@ssw0rd" \
     GLPI_ADMIN_PASSWORD="P@ssw0rd" \
-    INSTALL_ON_START="true"
+    INSTALL_ON_START="true"   # forcer la finalisation en avant-plan au premier run
 
-# ---- Entrypoint ----
+# ---- Entrypoint (finalise très vite au 1er start) ----
 RUN printf '%s\n' \
 '#!/usr/bin/env bash' \
 'set -euo pipefail' \
 '' \
-'echo "[BOOT] Entrypoint GLPI - démarrage"' \
+'echo "[BOOT] GLPI preconfigured - fast finalize on first start"' \
 '' \
-'# Répertoires runtime' \
+'# Runtime dirs' \
 'mkdir -p /run/mysqld /run/apache2' \
 'chown -R mysql:mysql /run/mysqld /var/lib/mysql' \
 'chown -R www-data:www-data /run/apache2 || true' \
 '' \
-'# Init datadir MariaDB au premier run' \
+'# Init datadir MariaDB on first run' \
 'if [ ! -d "/var/lib/mysql/mysql" ]; then' \
-'  echo "[INIT] Initialisation du datadir MariaDB..."' \
+'  echo "[INIT] Initializing MariaDB datadir..."' \
 '  mariadb-install-db --user=mysql --ldata=/var/lib/mysql >/dev/null' \
 'fi' \
 '' \
-'# Démarrage MariaDB (background)' \
-'echo "[INIT] Démarrage de MariaDB..."' \
+'# Start MariaDB background' \
+'echo "[INIT] Starting MariaDB..."' \
 'mysqld_safe --skip-networking=0 --bind-address=127.0.0.1 >/var/log/mysqld_safe.log 2>&1 &' \
 'MYSQLD_PID=$!' \
 '' \
-'# Attente disponibilité MariaDB' \
-'for i in $(seq 1 90); do' \
+'# Wait ready' \
+'for i in $(seq 1 60); do' \
 '  if mysqladmin ping -uroot --silent; then break; fi' \
 '  sleep 1' \
-'  if ! kill -0 "$MYSQLD_PID" 2>/dev/null; then echo "[ERROR] mysqld a quitté"; exit 1; fi' \
+'  if ! kill -0 "$MYSQLD_PID" 2>/dev/null; then echo "[ERROR] mysqld died"; exit 1; fi' \
 'done' \
 '' \
-'# Création BDD/utilisateur (idempotent)' \
-'echo "[INIT] Préparation BDD GLPI..."' \
+'# Create DB/user (idempotent)' \
 'mysql -uroot <<SQL' \
 'CREATE DATABASE IF NOT EXISTS glpi CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;' \
-'CREATE USER IF NOT EXISTS '"'"'glpi'"'"'@'"'"'localhost'"'"' IDENTIFIED BY "'"'"'${DB_PASSWORD}'"'"'";' \
-'GRANT ALL PRIVILEGES ON glpi.* TO '"'"'glpi'"'"'@'"'"'localhost'"'"';' \
+'CREATE USER IF NOT EXISTS "glpi"@"localhost" IDENTIFIED BY "'"'"'${DB_PASSWORD}'"'"'";' \
+'GRANT ALL PRIVILEGES ON glpi.* TO "glpi"@"localhost";' \
 'FLUSH PRIVILEGES;' \
 'SQL' \
 '' \
-'# Charger les timezones (best-effort)' \
-'if ! mysql -uroot -Nse "SELECT COUNT(*) FROM mysql.time_zone_name" >/dev/null 2>&1; then' \
-'  echo "[INIT] Chargement des timezones MySQL..."' \
-'  mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -uroot mysql || true' \
-'fi' \
+'# Load timezones (best-effort)' \
+'mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -uroot mysql >/dev/null 2>&1 || true' \
 '' \
-'install_glpi() {' \
-'  if [ -f /var/www/html/config/config_db.php ]; then' \
-'    echo "[SKIP] GLPI déjà installé"; return 0; fi' \
-'  echo "[INSTALL] Installation silencieuse de GLPI..."' \
+'# Finalize GLPI only once: if tables missing, run installer CLI' \
+'NEED_INSTALL=$(mysql -Nse "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='\''glpi'\'' AND table_name='\''glpi_users'\'';" -uroot || echo 0)' \
+'if [ "$NEED_INSTALL" -eq 0 ]; then' \
+'  echo "[INSTALL] Running GLPI CLI installer..."' \
 '  runuser -u www-data -- php /var/www/html/bin/console database:install \\' \
-'    --db-host=127.0.0.1 \\' \
-'    --db-name=glpi \\' \
-'    --db-user=glpi \\' \
-'    --db-password="${DB_PASSWORD}" \\' \
-'    --admin-password="${GLPI_ADMIN_PASSWORD}" \\' \
+'    --db-host=127.0.0.1 --db-name=glpi --db-user=glpi \\' \
+'    --db-password="${DB_PASSWORD}" --admin-password="${GLPI_ADMIN_PASSWORD}" \\' \
 '    --no-interaction --force' \
-'  # Réinitialiser les MDP des comptes par défaut à P@ssw0rd' \
+'  # Reset default accounts passwords -> P@ssw0rd' \
 '  for u in glpi tech normal "post-only" postonly; do' \
 '    runuser -u www-data -- php /var/www/html/bin/console glpi:user:password-reset "$u" --password "${GLPI_ADMIN_PASSWORD}" || true' \
 '  done' \
 '  runuser -u www-data -- php /var/www/html/bin/console db:enable_timezones --no-interaction || true' \
 '  chown -R www-data:www-data /var/www/html || true' \
-'  echo "[INSTALL] Terminé. Comptes initiaux: glpi/tech/normal/post-only = ${GLPI_ADMIN_PASSWORD}"' \
-'}' \
-'' \
-'if [ "${INSTALL_ON_START}" = "true" ] || [ ! -f /var/www/html/config/config_db.php ]; then' \
-'  echo "[MODE] Post-install GLPI en avant-plan" ' \
-'  install_glpi || { echo "[WARN] Echec post-install (avant-plan)"; }' \
+'  echo "[INSTALL] Done."' \
 'else' \
-'  echo "[MODE] Pas de post-install requise (GLPI déjà configuré)"' \
+'  echo "[INSTALL] GLPI tables already present - skipping."' \
 'fi' \
 '' \
-'# Tentative non bloquante en arrière-plan si config absente' \
-'(' \
-'  set +e' \
-'  if [ ! -f /var/www/html/config/config_db.php ]; then' \
-'    echo "[BG] Tentative post-install GLPI en tâche de fond..."' \
-'    install_glpi || echo "[BG] Post-install background: échec (voir logs)"' \
-'  fi' \
-') &' \
-'' \
-'echo "[INIT] Lancement d’Apache (foreground)..."' \
+'echo "[RUN] Starting Apache..."' \
 'exec apache2ctl -D FOREGROUND' \
 > /usr/local/bin/docker-entrypoint.sh && chmod +x /usr/local/bin/docker-entrypoint.sh
 
