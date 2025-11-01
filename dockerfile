@@ -1,6 +1,5 @@
 # ===============================
-#  Dockerfile - GLPI 11.0.1 Full Auto
-#  (PHP exécuté dans /var/www/html)
+#  Dockerfile - GLPI 11.0.1 Full Auto (PHP dans /var/www/html)
 # ===============================
 
 FROM ubuntu:24.04
@@ -25,7 +24,7 @@ RUN wget -q https://github.com/glpi-project/glpi/releases/download/11.0.1/glpi-1
 
 # ---- Apache vhost (root sur /public) ----
 RUN a2enmod rewrite && rm -f /etc/apache2/sites-enabled/000-default.conf && \
-    cat >/etc/apache2/sites-available/glpi.conf <<'EOF'
+    cat >/etc/apache2/sites-available/glpi.conf <<'__VHOST__'
 <VirtualHost *:80>
     ServerName _
     DocumentRoot /var/www/html/public
@@ -48,12 +47,12 @@ RUN a2enmod rewrite && rm -f /etc/apache2/sites-enabled/000-default.conf && \
     ErrorLog ${APACHE_LOG_DIR}/glpi_error.log
     CustomLog ${APACHE_LOG_DIR}/glpi_access.log combined
 </VirtualHost>
-EOF
+__VHOST__
 RUN a2ensite glpi
 
 # ---- PHP tuning ----
 RUN mkdir -p /etc/php/8.3/apache2/conf.d && \
-    cat >/etc/php/8.3/apache2/conf.d/90-glpi.ini <<'INI'
+    cat >/etc/php/8.3/apache2/conf.d/90-glpi.ini <<'__PHPINI__'
 memory_limit = 512M
 session.use_strict_mode = 1
 session.use_only_cookies = 1
@@ -63,7 +62,7 @@ opcache.memory_consumption=128
 opcache.interned_strings_buffer=16
 opcache.max_accelerated_files=10000
 opcache.revalidate_freq=60
-INI
+__PHPINI__
 
 # ---- Permissions web ----
 RUN for d in /var/www/html/files /var/www/html/config /var/www/html/marketplace; do \
@@ -73,14 +72,14 @@ RUN for d in /var/www/html/files /var/www/html/config /var/www/html/marketplace;
     find /var/www/html -type d -exec chmod 755 {} \; && \
     find /var/www/html -type f -exec chmod 644 {} \;
 
-# ---------- Script de démarrage (exécute PHP DANS /var/www/html) ----------
-RUN cat > /usr/local/bin/start-glpi.sh <<'BASH' && chmod +x /usr/local/bin/start-glpi.sh
+# ---------- Script de démarrage (PHP DANS /var/www/html) ----------
+RUN cat > /usr/local/bin/start-glpi.sh <<'__START__' && chmod +x /usr/local/bin/start-glpi.sh
 #!/usr/bin/env bash
 set -Eeuo pipefail
 LOG=/var/log/glpi_install.log
 exec > >(tee -a "$LOG") 2>&1
 
-echo "==[BOOT]== $(date -Is) GLPI startup (all PHP in /var/www/html)"
+echo "==[BOOT]== $(date -Is) GLPI startup (PHP in /var/www/html)"
 
 # Dossiers runtime
 mkdir -p /run/mysqld /run/apache2 /var/www/html/config
@@ -88,7 +87,7 @@ chown -R mysql:mysql /run/mysqld /var/lib/mysql
 chown -R www-data:www-data /run/apache2 || true
 
 # (1) Écrire (toujours) config_db.php
-cat >/var/www/html/config/config_db.php <<'PHP'
+cat >/var/www/html/config/config_db.php <<'__CFG__'
 <?php
 class DB extends DBmysql {
    public $dbhost = '127.0.0.1';
@@ -97,7 +96,7 @@ class DB extends DBmysql {
    public $dbdefault = 'glpi';
    public $use_utf8mb4 = true;
 }
-PHP
+__CFG__
 chown -R www-data:www-data /var/www/html/config
 chmod 644 /var/www/html/config/config_db.php
 echo "==[CONF]== config_db.php écrit"
@@ -117,12 +116,12 @@ done
 mysql -uroot -e "SELECT VERSION()\G" || { echo "!! MariaDB KO"; exit 1; }
 
 # (4) BDD + user
-mysql -uroot <<'SQL'
+mysql -uroot <<'__SQL__'
 CREATE DATABASE IF NOT EXISTS glpi CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 CREATE USER IF NOT EXISTS "glpi"@"localhost" IDENTIFIED BY "P@ssw0rd";
 GRANT ALL PRIVILEGES ON glpi.* TO "glpi"@"localhost";
 FLUSH PRIVILEGES;
-SQL
+__SQL__
 echo "==[DB]== BDD et utilisateur glpi OK"
 
 # (5) Timezones MySQL
@@ -141,4 +140,32 @@ if [ "$HAS_USERS" -eq 0 ]; then
     --admin-password="P@ssw0rd" --no-interaction --force'
 
   # Vérif immédiate
-  HAS_US_
+  HAS_USERS=$(mysql -Nse "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='glpi' AND table_name='glpi_users';" -uroot || echo 0)
+  if [ "$HAS_USERS" -eq 0 ]; then
+    echo "!! Install CLI OK mais pas de tables. Voir $LOG et /var/log/mysqld_safe.log"
+    exit 1
+  fi
+
+  # Timezones GLPI + reset MDP
+  runuser -u www-data -- bash -lc 'cd /var/www/html && php bin/console db:enable_timezones --no-interaction || true'
+  for u in glpi tech normal "post-only" postonly; do
+    runuser -u www-data -- bash -lc "cd /var/www/html && php bin/console glpi:user:password-reset \"$u\" --password \"P@ssw0rd\" || true"
+  done
+  echo "==[INSTALL]== GLPI installé. Comptes défaut = P@ssw0rd"
+else
+  echo "==[INSTALL]== GLPI déjà installé (tables présentes)"
+fi
+
+# (7) Vérifier l'inclusion PHP (dans /var/www/html)
+runuser -u www-data -- bash -lc 'cd /var/www/html && php -r "require \"inc/defines.php\"; require \"inc/based_config.php\"; require \"config/config_db.php\"; echo \"==[PHP]== include OK\n\";"' \
+  || { echo "!! PHP include KO (config_db.php)"; exit 1; }
+
+# (8) Lancer Apache
+echo "==[WEB]== Démarrage Apache"
+exec apache2ctl -D FOREGROUND
+__START__
+
+# ---- Exposition & santé ----
+EXPOSE 80
+HEALTHCHECK --interval=30s --timeout=5s --retries=10 CMD curl -fsS http://127.0.0.1/ || exit 1
+ENTRYPOINT ["/usr/local/bin/start-glpi.sh"]
