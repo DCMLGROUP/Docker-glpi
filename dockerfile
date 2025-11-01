@@ -1,5 +1,5 @@
 # ===============================
-#  Dockerfile - GLPI 11.0.1 (Full Auto - No ENV)
+#  Dockerfile - GLPI 11.0.1 Full Auto (no ENV)
 # ===============================
 
 FROM ubuntu:24.04
@@ -85,58 +85,69 @@ PHP
 RUN chown -R www-data:www-data /var/www/html/config
 
 # ---- Script de démarrage complet ----
-RUN printf '%s\n' \
-'#!/usr/bin/env bash' \
-'set -e' \
-'echo "[BOOT] Lancement initial GLPI full auto..."' \
-'mkdir -p /run/mysqld /run/apache2' \
-'chown -R mysql:mysql /run/mysqld /var/lib/mysql' \
-'chown -R www-data:www-data /run/apache2 || true' \
-'' \
-'# Initialiser MariaDB au premier run' \
-'if [ ! -d "/var/lib/mysql/mysql" ]; then' \
-'  echo "[INIT] Création du datadir MariaDB..."' \
-'  mariadb-install-db --user=mysql --ldata=/var/lib/mysql >/dev/null' \
-'fi' \
-'' \
-'echo "[INIT] Démarrage de MariaDB..."' \
-'mysqld_safe --skip-networking=0 --bind-address=127.0.0.1 >/var/log/mysqld_safe.log 2>&1 &' \
-'for i in $(seq 1 60); do' \
-'  mysqladmin ping -uroot --silent && break || sleep 1' \
-'done' \
-'' \
-'echo "[INIT] Configuration de la base de données GLPI..."' \
-'mysql -uroot <<SQL' \
-'CREATE DATABASE IF NOT EXISTS glpi CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;' \
-'CREATE USER IF NOT EXISTS "glpi"@"localhost" IDENTIFIED BY "P@ssw0rd";' \
-'GRANT ALL PRIVILEGES ON glpi.* TO "glpi"@"localhost";' \
-'FLUSH PRIVILEGES;' \
-'SQL' \
-'' \
-'# Charger les timezones' \
-'mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -uroot mysql >/dev/null 2>&1 || true' \
-'' \
-'# Vérifier si les tables GLPI existent déjà' \
-'NEED_INSTALL=$(mysql -Nse "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='\''glpi'\'' AND table_name='\''glpi_users'\'';" -uroot || echo 0)' \
-'if [ "$NEED_INSTALL" -eq 0 ]; then' \
-'  echo "[INSTALL] Installation GLPI silencieuse..."' \
-'  runuser -u www-data -- php /var/www/html/bin/console database:install \\' \
-'    --db-host=127.0.0.1 --db-name=glpi --db-user=glpi --db-password="P@ssw0rd" \\' \
-'    --admin-password="P@ssw0rd" --no-interaction --force' \
-'  runuser -u www-data -- php /var/www/html/bin/console db:enable_timezones --no-interaction || true' \
-'  for u in glpi tech normal "post-only" postonly; do' \
-'    runuser -u www-data -- php /var/www/html/bin/console glpi:user:password-reset "$u" --password "P@ssw0rd" || true' \
-'  done' \
-'  echo "[INSTALL] Installation terminée. Comptes: glpi/tech/normal/post-only = P@ssw0rd"' \
-'else' \
-'  echo "[INSTALL] GLPI déjà installé."' \
-'fi' \
-'' \
-'chown -R www-data:www-data /var/www/html' \
-'echo "[RUN] Lancement d’Apache..."' \
-'exec apache2ctl -D FOREGROUND' \
-> /usr/local/bin/start-glpi.sh && chmod +x /usr/local/bin/start-glpi.sh
+RUN cat > /usr/local/bin/start-glpi.sh <<'BASH' && chmod +x /usr/local/bin/start-glpi.sh
+#!/usr/bin/env bash
+set -euo pipefail
 
+echo "[BOOT] Lancement initial GLPI full auto..."
+mkdir -p /run/mysqld /run/apache2
+chown -R mysql:mysql /run/mysqld /var/lib/mysql
+chown -R www-data:www-data /run/apache2 || true
+
+# Initialiser MariaDB au premier run
+if [ ! -d "/var/lib/mysql/mysql" ]; then
+  echo "[INIT] Création du datadir MariaDB..."
+  mariadb-install-db --user=mysql --ldata=/var/lib/mysql >/dev/null
+fi
+
+echo "[INIT] Démarrage de MariaDB..."
+mysqld_safe --skip-networking=0 --bind-address=127.0.0.1 >/var/log/mysqld_safe.log 2>&1 &
+for i in $(seq 1 60); do
+  mysqladmin ping -uroot --silent && break || sleep 1
+done
+
+echo "[INIT] Configuration de la base de données GLPI..."
+mysql -uroot <<SQL
+CREATE DATABASE IF NOT EXISTS glpi CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER IF NOT EXISTS "glpi"@"localhost" IDENTIFIED BY "P@ssw0rd";
+GRANT ALL PRIVILEGES ON glpi.* TO "glpi"@"localhost";
+FLUSH PRIVILEGES;
+SQL
+
+# Charger les timezones (best-effort)
+mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -uroot mysql >/dev/null 2>&1 || true
+
+# Vérifier si les tables GLPI existent déjà
+NEED_INSTALL=$(mysql -Nse "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='glpi' AND table_name='glpi_users';" -uroot || echo 0)
+
+if [ "$NEED_INSTALL" -eq 0 ]; then
+  echo "[INSTALL] Installation GLPI silencieuse..."
+  runuser -u www-data -- php /var/www/html/bin/console database:install \
+    --db-host=127.0.0.1 \
+    --db-name=glpi \
+    --db-user=glpi \
+    --db-password="P@ssw0rd" \
+    --admin-password="P@ssw0rd" \
+    --no-interaction --force
+
+  runuser -u www-data -- php /var/www/html/bin/console db:enable_timezones --no-interaction || true
+
+  # Réinitialiser les MDP des comptes par défaut à P@ssw0rd
+  for u in glpi tech normal "post-only" postonly; do
+    runuser -u www-data -- php /var/www/html/bin/console glpi:user:password-reset "$u" --password "P@ssw0rd" || true
+  done
+
+  echo "[INSTALL] Installation terminée. Comptes: glpi/tech/normal/post-only = P@ssw0rd"
+else
+  echo "[INSTALL] GLPI déjà installé."
+fi
+
+chown -R www-data:www-data /var/www/html
+echo "[RUN] Lancement d’Apache..."
+exec apache2ctl -D FOREGROUND
+BASH
+
+# ---- Ports et démarrage ----
 EXPOSE 80
 HEALTHCHECK --interval=30s --timeout=5s --retries=10 CMD curl -fsS http://127.0.0.1/ || exit 1
 ENTRYPOINT ["/usr/local/bin/start-glpi.sh"]
