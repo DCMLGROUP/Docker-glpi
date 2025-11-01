@@ -1,5 +1,5 @@
 # ===============================
-#  Dockerfile - GLPI 11.0.1 (Dokploy friendly)
+#  Dockerfile - GLPI 11.0.1 (auto install + option foreground)
 # ===============================
 
 FROM ubuntu:24.04
@@ -76,63 +76,87 @@ RUN for d in /var/www/html/files /var/www/html/config /var/www/html/marketplace;
     find /var/www/html -type d -exec chmod 755 {} \; && \
     find /var/www/html -type f -exec chmod 644 {} \;
 
-# ---- Entrypoint: init MariaDB + install GLPI si besoin (non bloquant) ----
-# Personnalisables à l’exécution:
-#   - DB_PASSWORD (mot de passe SQL de l’utilisateur glpi)
-#   - GLPI_ADMIN_PASSWORD (mot de passe admin GLPI)
+# ---- Variables runtime ----
+# INSTALL_ON_START=true  -> post-install GLPI en avant-plan au premier run (peut bloquer le proxy si long)
+# INSTALL_ON_START=false -> post-install en tâche de fond (par défaut)
 ENV DB_PASSWORD="P@ssw0rd" \
-    GLPI_ADMIN_PASSWORD="Admin123!"
+    GLPI_ADMIN_PASSWORD="Admin123!" \
+    INSTALL_ON_START="false"
 
+# ---- Entrypoint ----
 RUN printf '%s\n' \
 '#!/usr/bin/env bash' \
 'set -euo pipefail' \
 '' \
-'# Répertoires runtime requis' \
+'echo "[BOOT] Entrypoint GLPI - démarrage"' \
+'' \
+'# Répertoires runtime' \
 'mkdir -p /run/mysqld /run/apache2' \
 'chown -R mysql:mysql /run/mysqld /var/lib/mysql' \
 'chown -R www-data:www-data /run/apache2 || true' \
 '' \
-'# Initialisation du datadir MariaDB au premier run' \
+'# Init datadir MariaDB au premier run' \
 'if [ ! -d "/var/lib/mysql/mysql" ]; then' \
 '  echo "[INIT] Initialisation du datadir MariaDB..."' \
 '  mariadb-install-db --user=mysql --ldata=/var/lib/mysql >/dev/null' \
 'fi' \
 '' \
-'# Démarrage MariaDB en arrière-plan' \
+'# Démarrage MariaDB (background)' \
 'echo "[INIT] Démarrage de MariaDB..."' \
 'mysqld_safe --skip-networking=0 --bind-address=127.0.0.1 >/var/log/mysqld_safe.log 2>&1 &' \
+'MYSQLD_PID=$!' \
 '' \
-'# Tâche d’auto-install en arrière-plan pour ne pas bloquer Apache (évite 502)' \
-'(' \
-'  set +e' \
-'  for i in $(seq 1 60); do' \
-'    if mysqladmin ping -uroot --silent; then break; fi' \
-'    sleep 1' \
-'  done' \
+'# Attente disponibilité MariaDB' \
+'for i in $(seq 1 90); do' \
+'  if mysqladmin ping -uroot --silent; then break; fi' \
+'  sleep 1' \
+'  if ! kill -0 "$MYSQLD_PID" 2>/dev/null; then echo "[ERROR] mysqld a quitté"; exit 1; fi' \
+'done' \
 '' \
-'  # Création BDD/utilisateur (idempotent)' \
-'  mysql -uroot <<SQL' \
+'# Création BDD/utilisateur (idempotent)' \
+'echo "[INIT] Préparation BDD GLPI..."' \
+'mysql -uroot <<SQL' \
 'CREATE DATABASE IF NOT EXISTS glpi CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;' \
 'CREATE USER IF NOT EXISTS '"'"'glpi'"'"'@'"'"'localhost'"'"' IDENTIFIED BY "'"'"'${DB_PASSWORD}'"'"'";' \
 'GRANT ALL PRIVILEGES ON glpi.* TO '"'"'glpi'"'"'@'"'"'localhost'"'"';' \
 'FLUSH PRIVILEGES;' \
 'SQL' \
 '' \
-'  # Charger les timezones (best-effort)' \
-'  mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -uroot mysql >/dev/null 2>&1 || true' \
+'# Charger les timezones (best-effort)' \
+'if ! mysql -uroot -Nse "SELECT COUNT(*) FROM mysql.time_zone_name" >/dev/null 2>&1; then' \
+'  echo "[INIT] Chargement des timezones MySQL..."' \
+'  mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -uroot mysql || true' \
+'fi' \
 '' \
-'  # Installation GLPI si nécessaire' \
+'install_glpi() {' \
+'  if [ -f /var/www/html/config/config_db.php ]; then' \
+'    echo "[SKIP] GLPI déjà installé"; return 0; fi' \
+'  echo "[INSTALL] Installation silencieuse de GLPI..."' \
+'  runuser -u www-data -- php /var/www/html/bin/console database:install \\' \
+'    --db-host=127.0.0.1 \\' \
+'    --db-name=glpi \\' \
+'    --db-user=glpi \\' \
+'    --db-password="${DB_PASSWORD}" \\' \
+'    --admin-password="${GLPI_ADMIN_PASSWORD}" \\' \
+'    --no-interaction --force' \
+'  runuser -u www-data -- php /var/www/html/bin/console db:enable_timezones --no-interaction || true' \
+'  chown -R www-data:www-data /var/www/html || true' \
+'  echo "[INSTALL] Terminé. Identifiants initiaux: admin / ${GLPI_ADMIN_PASSWORD}"' \
+'}' \
+'' \
+'if [ "${INSTALL_ON_START}" = "true" ] || [ ! -f /var/www/html/config/config_db.php ]; then' \
+'  echo "[MODE] Post-install GLPI en avant-plan" ' \
+'  install_glpi || { echo "[WARN] Echec post-install (avant-plan), tentative en tâche de fond)"; }' \
+'else' \
+'  echo "[MODE] Pas de post-install requise (GLPI déjà configuré)"' \
+'fi' \
+'' \
+'# Lancer une tentative en arrière-plan au cas où (non bloquant, évite 502)' \
+'(' \
+'  set +e' \
 '  if [ ! -f /var/www/html/config/config_db.php ]; then' \
-'    echo "[INIT] Installation silencieuse de GLPI..."' \
-'    runuser -u www-data -- php /var/www/html/bin/console database:install \\' \
-'      --db-host=127.0.0.1 \\' \
-'      --db-name=glpi \\' \
-'      --db-user=glpi \\' \
-'      --db-password="${DB_PASSWORD}" \\' \
-'      --admin-password="${GLPI_ADMIN_PASSWORD}" \\' \
-'      --no-interaction --force || true' \
-'    runuser -u www-data -- php /var/www/html/bin/console db:enable_timezones --no-interaction || true' \
-'    chown -R www-data:www-data /var/www/html || true' \
+'    echo "[BG] Tentative post-install GLPI en tâche de fond..."' \
+'    install_glpi || echo "[BG] Post-install background: échec (voir logs)"' \
 '  fi' \
 ') &' \
 '' \
