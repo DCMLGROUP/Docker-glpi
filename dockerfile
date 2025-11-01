@@ -1,5 +1,5 @@
 # ===============================
-#  Dockerfile - GLPI 11.0.1 Full Auto (no ENV)
+#  Dockerfile - GLPI 11.0.1 Full Auto (no ENV + auto-repair config)
 # ===============================
 
 FROM ubuntu:24.04
@@ -72,8 +72,20 @@ RUN for d in /var/www/html/files /var/www/html/config /var/www/html/marketplace;
     find /var/www/html -type d -exec chmod 755 {} \; && \
     find /var/www/html -type f -exec chmod 644 {} \;
 
-# ---- Pré-création du fichier de configuration ----
-RUN cat >/var/www/html/config/config_db.php <<'PHP'
+# ---- Script de démarrage complet (avec recréation config_db.php si manquant) ----
+RUN cat > /usr/local/bin/start-glpi.sh <<'BASH' && chmod +x /usr/local/bin/start-glpi.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "[BOOT] Lancement initial GLPI full auto..."
+mkdir -p /run/mysqld /run/apache2 /var/www/html/config
+chown -R mysql:mysql /run/mysqld /var/lib/mysql
+chown -R www-data:www-data /run/apache2 /var/www/html/config || true
+
+# 🔧 Vérifier / recréer config_db.php
+if [ ! -f /var/www/html/config/config_db.php ]; then
+  echo "[FIX] Fichier config_db.php manquant, recréation..."
+  cat >/var/www/html/config/config_db.php <<'PHP'
 <?php
 class DB extends DBmysql {
    public $dbhost = '127.0.0.1';
@@ -82,19 +94,11 @@ class DB extends DBmysql {
    public $dbdefault = 'glpi';
 }
 PHP
-RUN chown -R www-data:www-data /var/www/html/config
+  chown www-data:www-data /var/www/html/config/config_db.php
+  chmod 644 /var/www/html/config/config_db.php
+fi
 
-# ---- Script de démarrage complet ----
-RUN cat > /usr/local/bin/start-glpi.sh <<'BASH' && chmod +x /usr/local/bin/start-glpi.sh
-#!/usr/bin/env bash
-set -euo pipefail
-
-echo "[BOOT] Lancement initial GLPI full auto..."
-mkdir -p /run/mysqld /run/apache2
-chown -R mysql:mysql /run/mysqld /var/lib/mysql
-chown -R www-data:www-data /run/apache2 || true
-
-# Initialiser MariaDB au premier run
+# 🗄️ Initialiser MariaDB au premier run
 if [ ! -d "/var/lib/mysql/mysql" ]; then
   echo "[INIT] Création du datadir MariaDB..."
   mariadb-install-db --user=mysql --ldata=/var/lib/mysql >/dev/null
@@ -117,7 +121,7 @@ SQL
 # Charger les timezones (best-effort)
 mysql_tzinfo_to_sql /usr/share/zoneinfo | mysql -uroot mysql >/dev/null 2>&1 || true
 
-# Vérifier si les tables GLPI existent déjà
+# 🔄 Vérifier si GLPI est déjà installé
 NEED_INSTALL=$(mysql -Nse "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='glpi' AND table_name='glpi_users';" -uroot || echo 0)
 
 if [ "$NEED_INSTALL" -eq 0 ]; then
@@ -132,12 +136,12 @@ if [ "$NEED_INSTALL" -eq 0 ]; then
 
   runuser -u www-data -- php /var/www/html/bin/console db:enable_timezones --no-interaction || true
 
-  # Réinitialiser les MDP des comptes par défaut à P@ssw0rd
+  # 🔐 Réinitialiser les MDP des comptes par défaut
   for u in glpi tech normal "post-only" postonly; do
     runuser -u www-data -- php /var/www/html/bin/console glpi:user:password-reset "$u" --password "P@ssw0rd" || true
   done
 
-  echo "[INSTALL] Installation terminée. Comptes: glpi/tech/normal/post-only = P@ssw0rd"
+  echo "[INSTALL] Installation terminée. Comptes = glpi/tech/normal/post-only : P@ssw0rd"
 else
   echo "[INSTALL] GLPI déjà installé."
 fi
