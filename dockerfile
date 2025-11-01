@@ -6,6 +6,9 @@
 FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Utiliser bash pour plus de robustesse dans RUN
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # ---- Paquets système, Apache, MariaDB, PHP ----
 RUN apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends \
@@ -24,8 +27,8 @@ RUN wget -q https://github.com/glpi-project/glpi/releases/download/11.0.1/glpi-1
     rm -f glpi-11.0.1.tgz
 
 # ---- Apache vhost (DocumentRoot sur /public) ----
-RUN a2enmod rewrite && rm -f /etc/apache2/sites-enabled/000-default.conf && \
-    cat >/etc/apache2/sites-available/glpi.conf <<'__VHOST__'
+RUN a2enmod rewrite && rm -f /etc/apache2/sites-enabled/000-default.conf
+RUN cat >/etc/apache2/sites-available/glpi.conf <<'__VHOST__'
 <VirtualHost *:80>
     ServerName _
     DocumentRoot /var/www/html/public
@@ -48,12 +51,12 @@ RUN a2enmod rewrite && rm -f /etc/apache2/sites-enabled/000-default.conf && \
     ErrorLog ${APACHE_LOG_DIR}/glpi_error.log
     CustomLog ${APACHE_LOG_DIR}/glpi_access.log combined
 </VirtualHost>
-__VHOST__ && \
-    a2ensite glpi
+__VHOST__
+RUN a2ensite glpi
 
 # ---- PHP tuning ----
-RUN mkdir -p /etc/php/8.3/apache2/conf.d && \
-    cat >/etc/php/8.3/apache2/conf.d/90-glpi.ini <<'__PHPINI__'
+RUN mkdir -p /etc/php/8.3/apache2/conf.d
+RUN cat >/etc/php/8.3/apache2/conf.d/90-glpi.ini <<'__PHPINI__'
 memory_limit = 512M
 session.use_strict_mode = 1
 session.use_only_cookies = 1
@@ -74,11 +77,7 @@ RUN for d in /var/www/html/files /var/www/html/config /var/www/html/marketplace;
     find /var/www/html -type f -exec chmod 644 {} \;
 
 # ---------- Script d'entrée (sans post-install) ----------
-# - Initialise MariaDB si le datadir est vide
-# - Démarre MariaDB en arrière-plan (optionnel)
-# - (Optionnel) crée la base 'glpi' et l'utilisateur 'glpi' sans toucher à GLPI
-# - Lance Apache au premier plan (OK pour Dokploy)
-RUN cat > /usr/local/bin/entrypoint.sh <<'__ENTRY__' && chmod +x /usr/local/bin/entrypoint.sh
+RUN cat >/usr/local/bin/entrypoint.sh <<'__ENTRY__'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
@@ -88,7 +87,7 @@ echo "==[BOOT]== $(date -Is) GLPI container (no post-install)"
 mkdir -p /run/mysqld /run/apache2
 chown -R mysql:mysql /run/mysqld /var/lib/mysql || true
 
-# (A) MariaDB local optionnelle
+# (A) MariaDB locale optionnelle
 if command -v mariadb-install-db >/dev/null 2>&1; then
   if [ ! -d "/var/lib/mysql/mysql" ]; then
     echo "==[DB]== Initialisation de MariaDB (datadir vide)"
@@ -119,6 +118,7 @@ fi
 echo "==[WEB]== Démarrage Apache (foreground)"
 exec apache2ctl -D FOREGROUND
 __ENTRY__
+RUN chmod +x /usr/local/bin/entrypoint.sh
 
 # ---- Exposition & santé ----
 EXPOSE 80
